@@ -80,15 +80,15 @@
 <aside id="panel">
   <h2>Screen</h2>
   <label>Columns <span class="val" data-for="columns"></span></label>
-  <input type="range" data-key="columns" min="80" max="320" step="2" value="210">
+  <input type="range" data-key="columns" min="80" max="640" step="2" value="420">
   <label>Height <span class="val" data-for="aspect"></span></label>
   <input type="range" data-key="aspect" min="1.4" max="2.2" step="0.05" value="1.7">
 
   <h2>Burst</h2>
   <label>Size <span class="val" data-for="size"></span></label>
-  <input type="range" data-key="size" min="0.4" max="2.4" step="0.05" value="1">
+  <input type="range" data-key="size" min="0.4" max="2.4" step="0.05" value="0.5">
   <label>Arms <span class="val" data-for="arms"></span></label>
-  <input type="range" data-key="arms" min="8" max="28" step="1" value="16">
+  <input type="range" data-key="arms" min="4" max="28" step="1" value="8">
   <label>Gravity <span class="val" data-for="gravity"></span></label>
   <input type="range" data-key="gravity" min="0.25" max="2.5" step="0.05" value="1">
 
@@ -113,34 +113,6 @@ const BANDS = [
   ["8", "0", "@", "#", "%", "X"]
 ];
 
-// Dark to light, sampled from the original frames.
-const PALETTES = [
-  [52, 88, 124, 160, 196, 202, 208, 214, 220, 226, 227, 230],
-  [22, 28, 34, 40, 46, 82, 118, 154, 155, 157, 193, 229],
-  [17, 18, 24, 30, 31, 38, 44, 51, 87, 123, 159, 195],
-  [54, 55, 56, 57, 63, 69, 75, 81, 117, 153, 189, 225],
-  [53, 89, 90, 126, 127, 163, 164, 165, 171, 177, 213, 219],
-  [94, 130, 166, 172, 178, 184, 214, 220, 221, 226, 227, 230]
-];
-
-const SCALE = [0, 95, 135, 175, 215, 255];
-const rgbCache = new Map();
-
-function xterm(n) {
-  const hit = rgbCache.get(n);
-  if (hit) return hit;
-  let rgb;
-  if (n >= 232) {
-    const v = 8 + (n - 232) * 10;
-    rgb = [v, v, v];
-  } else {
-    const i = n - 16;
-    rgb = [SCALE[(i / 36) | 0], SCALE[((i / 6) | 0) % 6], SCALE[i % 6]];
-  }
-  rgbCache.set(n, rgb);
-  return rgb;
-}
-
 const canvas = document.getElementById("sky");
 const ctx = canvas.getContext("2d", { alpha: false });
 
@@ -154,10 +126,10 @@ let energy, glyphs, colors;
 let hinted = true;
 
 const controls = {
-  columns: 210,
+  columns: 420,
   aspect: 1.7,
-  size: 1,
-  arms: 16,
+  size: 0.5,
+  arms: 8,
   gravity: 1,
   asymmetry: 0.75,
   noise: 0.6,
@@ -226,13 +198,48 @@ function glyphChar() {
   return set[(Math.random() * set.length) | 0];
 }
 
-function paletteAt(base, rainbow, angle) {
-  if (!rainbow) return base;
-  const i = Math.floor(((angle + Math.PI) / (Math.PI * 2)) * PALETTES.length);
-  return PALETTES[(i + PALETTES.length) % PALETTES.length];
+// Neighboring pairs, the same step apart as red and orange.
+const COLOR_PAIRS = [
+  [[2, 100, 52], [28, 100, 52]],
+  [[50, 100, 52], [78, 100, 48]],
+  [[126, 100, 46], [156, 95, 48]],
+  [[208, 100, 58], [246, 95, 62]]
+];
+
+function hsl(h, s, l) {
+  s /= 100;
+  l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = ((h % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs(hp % 2 - 1));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hp < 1) { r = c; g = x; }
+  else if (hp < 2) { r = x; g = c; }
+  else if (hp < 3) { g = c; b = x; }
+  else if (hp < 4) { g = x; b = c; }
+  else if (hp < 5) { r = x; b = c; }
+  else { r = c; b = x; }
+  const m = l - c / 2;
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
 }
 
-function addSpark(x, y, ang, speed, life, grav, pal) {
+function pickScheme() {
+  if (Math.random() < 0.14) return { rainbow: true, colors: null };
+  const pair = COLOR_PAIRS[(Math.random() * COLOR_PAIRS.length) | 0];
+  return {
+    rainbow: false,
+    colors: [hsl(pair[0][0], pair[0][1], pair[0][2]), hsl(pair[1][0], pair[1][1], pair[1][2])]
+  };
+}
+
+function sparkRgb(scheme, angle, slot) {
+  if (scheme.rainbow) return hsl(((angle + Math.PI) / (Math.PI * 2)) * 360, 88, 60);
+  return scheme.colors[slot % 2];
+}
+
+function addSpark(x, y, ang, speed, life, grav, color) {
   sparks.push({
     x,
     y,
@@ -248,8 +255,7 @@ function addSpark(x, y, ang, speed, life, grav, pal) {
     glyphs: [],
     last: null,
     falling: false,
-    pal,
-    shift: (Math.random() * 3) | 0
+    color
   });
 }
 
@@ -257,7 +263,7 @@ function burstReach() {
   return Math.max(0.35, rows / 32) * controls.size;
 }
 
-function explode(x, y, base, rainbow, scale) {
+function explode(x, y, scheme, scale) {
   const reach = burstReach();
   const asym = controls.asymmetry;
   const rays = Math.max(4, Math.round(controls.arms * Math.max(0.75, scale)));
@@ -272,18 +278,19 @@ function explode(x, y, base, rainbow, scale) {
     const speed = (12 + Math.random() * 8 * Math.max(asym, 0.08)) * stretch * cellH * reach;
     const life = 2.3 + Math.random() * (0.4 + asym * 0.75);
     const grav = 1 - asym * 0.25 + Math.random() * asym * 0.7;
-    const pal = paletteAt(base, rainbow, ang);
-    addSpark(x, y, ang + (Math.random() - 0.5) * 0.28 * asym, speed, life, grav, pal);
+    const aim = ang + (Math.random() - 0.5) * 0.28 * asym;
+    addSpark(x, y, aim, speed, life, grav, sparkRgb(scheme, aim, i));
     if (Math.random() < 0.7) {
       const off = (Math.random() < 0.5 ? -1 : 1) * (0.05 + Math.random() * (0.06 + 0.32 * asym));
+      const aim2 = ang + off;
       addSpark(
         x,
         y,
-        ang + off,
+        aim2,
         speed * (0.55 + Math.random() * (0.15 + 0.3 * asym)),
         life * (0.9 + Math.random() * 0.15),
         grav * (0.9 + Math.random() * 0.2 * asym),
-        pal
+        sparkRgb(scheme, aim2, i + 1)
       );
     }
   }
@@ -292,8 +299,7 @@ function explode(x, y, base, rainbow, scale) {
       at: performance.now() + 140 + Math.random() * 160,
       x: x + (Math.random() - 0.5) * cellW * 4,
       y: y + (Math.random() - 0.2) * cellH * 3,
-      pal: base,
-      rainbow,
+      scheme,
       scale: 0.62
     });
   }
@@ -301,11 +307,10 @@ function explode(x, y, base, rainbow, scale) {
 
 function launch(x, y) {
   hinted = false;
-  const base = PALETTES[(Math.random() * PALETTES.length) | 0];
-  const rainbow = Math.random() < 0.3;
+  const scheme = pickScheme();
   const room = cssH - y;
   if (room < cellH * 5) {
-    explode(x, y, base, rainbow, 1);
+    explode(x, y, scheme, 1);
     return;
   }
   rockets.push({
@@ -313,16 +318,20 @@ function launch(x, y) {
     y: cssH - cellH * 0.5,
     tx: x,
     ty: y,
-    pal: base,
-    rainbow,
+    scheme,
     age: 0,
-    dur: Math.max(0.2, Math.min(0.62, room / (cssH * 1.35))),
+    dur: Math.max(0.28, Math.min(0.78, room / (cssH * 1.15))),
+    phase: "rise",
+    hold: 0,
+    sway: Math.random() * Math.PI * 2,
+    sway2: Math.random() * Math.PI * 2,
     trail: []
   });
 }
 
-function rocketColor(pal) {
-  return xterm(pal[pal.length - 2]);
+function rocketColor(rocket) {
+  if (rocket.scheme.rainbow) return hsl((rocket.age * 280) % 360, 88, 62);
+  return rocket.scheme.colors[0];
 }
 
 function fadeMul() {
@@ -362,7 +371,7 @@ function layGlyphs(s, x0, y0, x1, y1, gap) {
   const len = Math.hypot(dx, dy) || 1;
   const nx = (-dy / len) * cellW;
   const ny = (dx / len) * cellH;
-  const rgb = sparkColor(s, 0.92);
+  const rgb = s.color;
   const steps = Math.max(1, Math.ceil(len / gap));
   for (let t = 1; t <= steps; t++) {
     const u = t / steps;
@@ -373,47 +382,56 @@ function layGlyphs(s, x0, y0, x1, y1, gap) {
   }
 }
 
-function sparkColor(s, e) {
-  const pal = s.pal;
-  const t = Math.max(0, Math.min(1, 0.32 + 0.68 * e));
-  let idx = Math.round(t * (pal.length - 1)) + s.shift - 1;
-  if (idx < 2) idx = 2;
-  if (idx >= pal.length) idx = pal.length - 1;
-  return xterm(pal[idx]);
-}
-
 function step(dt) {
   const now = performance.now();
   for (let i = later.length - 1; i >= 0; i--) {
     const job = later[i];
     if (now >= job.at) {
-      explode(job.x, job.y, job.pal, job.rainbow, job.scale);
+      explode(job.x, job.y, job.scheme, job.scale);
       later.splice(i, 1);
     }
   }
 
   for (let i = rockets.length - 1; i >= 0; i--) {
     const r = rockets[i];
+    if (r.phase === "gone") {
+      r.hold -= dt;
+      if (r.hold <= 0) {
+        explode(r.tx, r.ty, r.scheme, 1);
+        rockets.splice(i, 1);
+      }
+      continue;
+    }
     r.age += dt;
     const t = Math.min(1, r.age / r.dur);
-    const ease = 1 - (1 - t) * (1 - t);
+    // Constant deceleration: most of the climb is early, then it coasts to a stop.
+    const ease = 1 - Math.pow(1 - t, 3);
     const y = r.y + (r.ty - r.y) * ease;
-    const x = r.tx + Math.sin(r.age * 28) * cellW * 0.35;
+    const bend =
+      Math.sin(t * Math.PI * 2 * 1.35 + r.sway) * 0.7 +
+      Math.sin(t * Math.PI * 2 * 2.6 + r.sway2) * 0.3;
+    const envelope =
+      Math.sin(Math.min(1, t / 0.14) * Math.PI * 0.5) * Math.min(1, (1 - t) / 0.2);
+    const x = r.tx + bend * cellW * 5.5 * envelope;
     const prev = r.trail[r.trail.length - 1];
-    if (!prev || Math.abs(y - prev.y) > cellH * 0.85) {
+    if (!prev || Math.abs(y - prev.y) > cellH * 0.7 || Math.abs(x - prev.x) > cellW * 0.75) {
       r.trail.push({ x, y });
-      if (r.trail.length > 14) r.trail.shift();
     }
-    const head = rocketColor(r.pal);
+    const remain = Math.min(1, (1 - ease) / 0.14);
+    const tail = Math.max(0, Math.round(14 * remain));
+    while (r.trail.length > tail) r.trail.shift();
+    if (t >= 1) {
+      r.phase = "gone";
+      r.hold = 0.16;
+      r.trail.length = 0;
+      continue;
+    }
+    const head = rocketColor(r);
     const n = r.trail.length;
     for (let k = 0; k < n; k++) {
       const p = r.trail[k];
       const e = k === n - 1 ? 1 : 0.28 + 0.45 * (k / n);
       stamp(p.x, p.y, e, head);
-    }
-    if (t >= 1) {
-      explode(r.tx, r.ty, r.pal, r.rainbow, 1);
-      rockets.splice(i, 1);
     }
   }
 
