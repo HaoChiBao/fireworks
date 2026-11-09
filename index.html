@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fireworks</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    #panel {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      width: 228px;
+      max-height: calc(100vh - 28px);
+      overflow: auto;
+      padding: 12px 14px 10px;
+      background: rgba(8, 8, 8, 0.86);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      color: #cfcfcf;
+      font: 12px/1.3 Consolas, "Courier New", monospace;
+      z-index: 2;
+    }
+    #panel h2 {
+      margin: 11px 0 6px;
+      color: #8d8d8d;
+      font: inherit;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    #panel h2:first-child { margin-top: 0; }
+    #panel label {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    #panel .val { color: #9a9a9a; }
+    #panel input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      display: block;
+      width: 100%;
+      height: 2px;
+      margin: 7px 0 2px;
+      background: #3a3a3a;
+      outline: none;
+      cursor: pointer;
+    }
+    #panel input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #e4d08a;
+    }
+    #panel input[type="range"]::-moz-range-thumb {
+      width: 10px;
+      height: 10px;
+      border: 0;
+      border-radius: 50%;
+      background: #e4d08a;
+    }
+  </style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+<aside id="panel">
+  <h2>Screen</h2>
+  <label>Columns <span class="val" data-for="columns"></span></label>
+  <input type="range" data-key="columns" min="80" max="320" step="2" value="210">
+  <label>Height <span class="val" data-for="aspect"></span></label>
+  <input type="range" data-key="aspect" min="1.4" max="2.2" step="0.05" value="1.7">
+
+  <h2>Burst</h2>
+  <label>Size <span class="val" data-for="size"></span></label>
+  <input type="range" data-key="size" min="0.4" max="2.4" step="0.05" value="1">
+  <label>Arms <span class="val" data-for="arms"></span></label>
+  <input type="range" data-key="arms" min="8" max="28" step="1" value="16">
+  <label>Gravity <span class="val" data-for="gravity"></span></label>
+  <input type="range" data-key="gravity" min="0.25" max="2.5" step="0.05" value="1">
+
+  <h2>Shape</h2>
+  <label>Asymmetry <span class="val" data-for="asymmetry"></span></label>
+  <input type="range" data-key="asymmetry" min="0" max="1" step="0.01" value="0.75">
+  <label>Noise <span class="val" data-for="noise"></span></label>
+  <input type="range" data-key="noise" min="0" max="1" step="0.01" value="0.6">
+  <label>Fade <span class="val" data-for="fade"></span></label>
+  <input type="range" data-key="fade" min="0" max="1" step="0.01" value="0.35">
+</aside>
+<script>
+// Recreation of rvizzz/text_art_animations fireworks.
+// A click blooms from a point into dense ASCII streaks that arc under gravity.
+const BANDS = [
+  [".", "`", "'", ","],
+  ["-", ";", "^", "_", "'"],
+  [")", "!", "[", "]", "(", "+"],
+  ["=", "/", "\\", "*", "^", "+"],
+  ["Y", "y", "x", "Z", "$", "z", "7", "1"],
+  ["5", "%", "9", "#", "4", "8", "*", "Z"],
+  ["8", "0", "@", "#", "%", "X"]
+];
+
+// Dark to light, sampled from the original frames.
+const PALETTES = [
+  [52, 88, 124, 160, 196, 202, 208, 214, 220, 226, 227, 230],
+  [22, 28, 34, 40, 46, 82, 118, 154, 155, 157, 193, 229],
+  [17, 18, 24, 30, 31, 38, 44, 51, 87, 123, 159, 195],
+  [54, 55, 56, 57, 63, 69, 75, 81, 117, 153, 189, 225],
+  [53, 89, 90, 126, 127, 163, 164, 165, 171, 177, 213, 219],
+  [94, 130, 166, 172, 178, 184, 214, 220, 221, 226, 227, 230]
+];
+
+const SCALE = [0, 95, 135, 175, 215, 255];
+const rgbCache = new Map();
+
+function xterm(n) {
+  const hit = rgbCache.get(n);
+  if (hit) return hit;
+  let rgb;
+  if (n >= 232) {
+    const v = 8 + (n - 232) * 10;
+    rgb = [v, v, v];
+  } else {
+    const i = n - 16;
+    rgb = [SCALE[(i / 36) | 0], SCALE[((i / 6) | 0) % 6], SCALE[i % 6]];
+  }
+  rgbCache.set(n, rgb);
+  return rgb;
+}
+
+const canvas = document.getElementById("sky");
+const ctx = canvas.getContext("2d", { alpha: false });
+
+let cssW = 0;
+let cssH = 0;
+let cellW = 10;
+let cellH = 18;
+let cols = 0;
+let rows = 0;
+let energy, glyphs, colors;
+let hinted = true;
+
+const controls = {
+  columns: 210,
+  aspect: 1.7,
+  size: 1,
+  arms: 16,
+  gravity: 1,
+  asymmetry: 0.75,
+  noise: 0.6,
+  fade: 0.35
+};
+
+const rockets = [];
+const sparks = [];
+const later = [];
+let last = performance.now();
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cssW = window.innerWidth;
+  cssH = window.innerHeight;
+  canvas.width = Math.max(1, Math.floor(cssW * dpr));
+  canvas.height = Math.max(1, Math.floor(cssH * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  cols = Math.max(1, Math.round(controls.columns));
+  cellW = cssW / cols;
+  cellH = cellW * controls.aspect;
+  rows = Math.max(1, Math.round(cssH / cellH));
+  cellH = cssH / rows;
+
+  energy = new Float32Array(cols * rows);
+  glyphs = new Array(cols * rows);
+  colors = new Uint32Array(cols * rows);
+  ctx.font = `${Math.max(7, Math.floor(cellH * 0.92))}px Consolas, "Courier New", monospace`;
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  paintControls();
+}
+
+function pack(rgb) {
+  return (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+}
+
+function stamp(x, y, e, rgb) {
+  if (e <= 0) return;
+  const c = (x / cellW) | 0;
+  const r = (y / cellH) | 0;
+  if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+  const i = r * cols + c;
+  if (energy[i] > 0) return;
+  energy[i] = e;
+  const band = Math.min(BANDS.length - 1, (e * BANDS.length) | 0);
+  const set = BANDS[band];
+  glyphs[i] = set[(Math.random() * set.length) | 0];
+  colors[i] = pack(rgb);
+}
+
+function stampChar(x, y, ch, rgb) {
+  const c = (x / cellW) | 0;
+  const r = (y / cellH) | 0;
+  if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+  const i = r * cols + c;
+  if (energy[i] > 0) return;
+  energy[i] = 1;
+  glyphs[i] = ch;
+  colors[i] = pack(rgb);
+}
+
+function glyphChar() {
+  const set = BANDS[2 + ((Math.random() * (BANDS.length - 2)) | 0)];
+  return set[(Math.random() * set.length) | 0];
+}
+
+function paletteAt(base, rainbow, angle) {
+  if (!rainbow) return base;
+  const i = Math.floor(((angle + Math.PI) / (Math.PI * 2)) * PALETTES.length);
+  return PALETTES[(i + PALETTES.length) % PALETTES.length];
+}
+
+function addSpark(x, y, ang, speed, life, grav, pal) {
+  sparks.push({
+    x,
+    y,
+    ovx: Math.cos(ang) * speed,
+    ovy: Math.sin(ang) * speed,
+    vx: 0,
+    vy: 0,
+    age: 0,
+    windup: 0.16,
+    life,
+    grav,
+    wobble: (Math.random() - 0.5) * 0.6 * (controls.noise / 0.6),
+    glyphs: [],
+    last: null,
+    falling: false,
+    pal,
+    shift: (Math.random() * 3) | 0
+  });
+}
+
+function burstReach() {
+  return Math.max(0.35, rows / 32) * controls.size;
+}
+
+function explode(x, y, base, rainbow, scale) {
+  const reach = burstReach();
+  const asym = controls.asymmetry;
+  const rays = Math.max(4, Math.round(controls.arms * Math.max(0.75, scale)));
+  const lean = Math.random() * Math.PI * 2;
+  let ang = Math.random() * Math.PI * 2;
+  const step = (Math.PI * 2) / rays;
+  for (let i = 0; i < rays; i++) {
+    ang += step * (1 - asym * 0.55 + Math.random() * asym * 1.15);
+    if (Math.random() < asym * 0.18) continue;
+    const side = 0.5 + 0.5 * Math.cos(ang - lean);
+    const stretch = 1 - asym * 0.55 + asym * side;
+    const speed = (12 + Math.random() * 8 * Math.max(asym, 0.08)) * stretch * cellH * reach;
+    const life = 2.3 + Math.random() * (0.4 + asym * 0.75);
+    const grav = 1 - asym * 0.25 + Math.random() * asym * 0.7;
+    const pal = paletteAt(base, rainbow, ang);
+    addSpark(x, y, ang + (Math.random() - 0.5) * 0.28 * asym, speed, life, grav, pal);
+    if (Math.random() < 0.7) {
+      const off = (Math.random() < 0.5 ? -1 : 1) * (0.05 + Math.random() * (0.06 + 0.32 * asym));
+      addSpark(
+        x,
+        y,
+        ang + off,
+        speed * (0.55 + Math.random() * (0.15 + 0.3 * asym)),
+        life * (0.9 + Math.random() * 0.15),
+        grav * (0.9 + Math.random() * 0.2 * asym),
+        pal
+      );
+    }
+  }
+  if (scale > 0.8 && Math.random() < 0.45) {
+    later.push({
+      at: performance.now() + 140 + Math.random() * 160,
+      x: x + (Math.random() - 0.5) * cellW * 4,
+      y: y + (Math.random() - 0.2) * cellH * 3,
+      pal: base,
+      rainbow,
+      scale: 0.62
+    });
+  }
+}
+
+function launch(x, y) {
+  hinted = false;
+  const base = PALETTES[(Math.random() * PALETTES.length) | 0];
+  const rainbow = Math.random() < 0.3;
+  const room = cssH - y;
+  if (room < cellH * 5) {
+    explode(x, y, base, rainbow, 1);
+    return;
+  }
+  rockets.push({
+    x,
+    y: cssH - cellH * 0.5,
+    tx: x,
+    ty: y,
+    pal: base,
+    rainbow,
+    age: 0,
+    dur: Math.max(0.2, Math.min(0.62, room / (cssH * 1.35))),
+    trail: []
+  });
+}
+
+function rocketColor(pal) {
+  return xterm(pal[pal.length - 2]);
+}
+
+function fadeMul() {
+  return 1.35 - controls.fade;
+}
+
+function dieTime(s, index, total) {
+  const span = Math.max(0.3, s.life - s.age) * fadeMul();
+  const youth = index / Math.max(1, total - 1);
+  const t = Math.pow(Math.random(), 0.55) * (0.2 + 0.68 * youth);
+  return s.age + Math.max(0.04, t) * span;
+}
+
+function pushGlyph(s, x, y, rgb) {
+  const span = Math.max(0.2, s.life - s.age) * fadeMul();
+  s.glyphs.push({
+    x: x + (Math.random() - 0.5) * cellW * 0.55 * (controls.noise / 0.6),
+    y: y + (Math.random() - 0.5) * cellH * 0.4 * (controls.noise / 0.6),
+    ch: glyphChar(),
+    rgb,
+    dieAt: s.falling ? s.age + (0.05 + Math.random() * 0.28) * span : Infinity
+  });
+}
+
+function beginFall(s) {
+  s.falling = true;
+  const total = Math.max(1, s.glyphs.length);
+  for (let i = 0; i < s.glyphs.length; i++) {
+    if (s.glyphs[i].dieAt < Infinity) continue;
+    s.glyphs[i].dieAt = dieTime(s, i, total);
+  }
+}
+
+function layGlyphs(s, x0, y0, x1, y1, gap) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = (-dy / len) * cellW;
+  const ny = (dx / len) * cellH;
+  const rgb = sparkColor(s, 0.92);
+  const steps = Math.max(1, Math.ceil(len / gap));
+  for (let t = 1; t <= steps; t++) {
+    const u = t / steps;
+    const px = x0 + dx * u;
+    const py = y0 + dy * u;
+    pushGlyph(s, px, py, rgb);
+    pushGlyph(s, px + nx * 0.85, py + ny * 0.85, rgb);
+  }
+}
+
+function sparkColor(s, e) {
+  const pal = s.pal;
+  const t = Math.max(0, Math.min(1, 0.32 + 0.68 * e));
+  let idx = Math.round(t * (pal.length - 1)) + s.shift - 1;
+  if (idx < 2) idx = 2;
+  if (idx >= pal.length) idx = pal.length - 1;
+  return xterm(pal[idx]);
+}
+
+function step(dt) {
+  const now = performance.now();
+  for (let i = later.length - 1; i >= 0; i--) {
+    const job = later[i];
+    if (now >= job.at) {
+      explode(job.x, job.y, job.pal, job.rainbow, job.scale);
+      later.splice(i, 1);
+    }
+  }
+
+  for (let i = rockets.length - 1; i >= 0; i--) {
+    const r = rockets[i];
+    r.age += dt;
+    const t = Math.min(1, r.age / r.dur);
+    const ease = 1 - (1 - t) * (1 - t);
+    const y = r.y + (r.ty - r.y) * ease;
+    const x = r.tx + Math.sin(r.age * 28) * cellW * 0.35;
+    const prev = r.trail[r.trail.length - 1];
+    if (!prev || Math.abs(y - prev.y) > cellH * 0.85) {
+      r.trail.push({ x, y });
+      if (r.trail.length > 14) r.trail.shift();
+    }
+    const head = rocketColor(r.pal);
+    const n = r.trail.length;
+    for (let k = 0; k < n; k++) {
+      const p = r.trail[k];
+      const e = k === n - 1 ? 1 : 0.28 + 0.45 * (k / n);
+      stamp(p.x, p.y, e, head);
+    }
+    if (t >= 1) {
+      explode(r.tx, r.ty, r.pal, r.rainbow, 1);
+      rockets.splice(i, 1);
+    }
+  }
+
+  const g = 16 * cellH * burstReach() * controls.gravity;
+  const gap = Math.min(cellW, cellH) * 0.42;
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.age += dt;
+    if (s.y > cssH + cellH * 4) {
+      sparks.splice(i, 1);
+      continue;
+    }
+    if (s.age < s.windup) {
+      const ramp = s.age / s.windup;
+      s.vx = s.ovx * ramp;
+      s.vy = s.ovy * ramp;
+    } else {
+      if (!s.burning) {
+        s.vx = s.ovx;
+        s.vy = s.ovy;
+        s.burning = true;
+      }
+      s.vx *= Math.exp(-0.12 * dt);
+      s.vy *= Math.exp(-0.04 * dt);
+      s.vy += g * s.grav * dt;
+      s.wobble += (Math.random() - 0.5) * 7 * (controls.noise / 0.6) * dt;
+      s.wobble *= Math.exp(-2.4 * dt);
+      const sp = Math.hypot(s.vx, s.vy) || 1;
+      const shove = s.wobble * cellH * 0.9 * dt;
+      const px = -s.vy / sp;
+      const py = s.vx / sp;
+      s.vx += px * shove;
+      s.vy += py * shove;
+    }
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    if (s.burning && !s.falling && (s.vy > cellH * 0.8 || s.age > s.life * 0.45)) beginFall(s);
+
+    const prev = s.last;
+    if (!prev || Math.hypot(s.x - prev.x, s.y - prev.y) >= gap) {
+      if (prev) layGlyphs(s, prev.x, prev.y, s.x, s.y, gap);
+      s.last = { x: s.x, y: s.y };
+    }
+
+    for (let k = s.glyphs.length - 1; k >= 0; k--) {
+      const glyph = s.glyphs[k];
+      if (s.age >= glyph.dieAt) {
+        s.glyphs.splice(k, 1);
+        continue;
+      }
+      stampChar(glyph.x, glyph.y, glyph.ch, glyph.rgb);
+    }
+    if (s.age >= s.life || (s.falling && s.glyphs.length === 0)) {
+      sparks.splice(i, 1);
+    }
+  }
+
+  if (sparks.length > 4200) sparks.splice(0, sparks.length - 4200);
+}
+
+function draw() {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, cssW, cssH);
+  ctx.font = `${Math.floor(cellH * 0.92)}px Consolas, "Courier New", monospace`;
+
+  for (let i = 0; i < energy.length; i++) {
+    const e = energy[i];
+    if (e <= 0) continue;
+    const rgb = colors[i];
+    ctx.fillStyle = `rgb(${(rgb >> 16) & 255},${(rgb >> 8) & 255},${rgb & 255})`;
+    ctx.fillText(glyphs[i], (i % cols) * cellW, ((i / cols) | 0) * cellH);
+  }
+
+  if (hinted && rockets.length === 0 && sparks.length === 0) {
+    ctx.fillStyle = "#6a6a6a";
+    ctx.font = `${Math.floor(cellH * 0.92)}px Consolas, "Courier New", monospace`;
+    const msg = "click";
+    ctx.fillText(msg, (cssW - msg.length * cellW) / 2, (cssH - cellH) / 2);
+  }
+}
+
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  energy.fill(0);
+  step(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+function controlText(key) {
+  const value = controls[key];
+  if (key === "columns") return cols + " × " + rows;
+  if (key === "aspect") return value.toFixed(2);
+  if (key === "size" || key === "gravity") return value.toFixed(2) + "×";
+  if (key === "arms") return String(value);
+  return Math.round(value * 100) + "%";
+}
+
+function paintControls() {
+  for (const key of Object.keys(controls)) {
+    const node = document.querySelector(`[data-for="${key}"]`);
+    if (node) node.textContent = controlText(key);
+  }
+}
+
+document.getElementById("panel").addEventListener("input", (event) => {
+  const key = event.target.dataset.key;
+  if (!key) return;
+  controls[key] = Number(event.target.value);
+  if (key === "columns" || key === "aspect") layout();
+  else paintControls();
+});
+
+document.getElementById("panel").addEventListener("pointerdown", (event) => {
+  event.stopPropagation();
+});
+
+canvas.addEventListener("pointerdown", (e) => {
+  launch(e.clientX, e.clientY);
+});
+
+window.addEventListener("resize", layout);
+layout();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
