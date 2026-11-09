@@ -95,17 +95,17 @@
 <aside id="panel">
   <h2>Screen</h2>
   <label>Columns <span class="val" data-for="columns"></span></label>
-  <input type="range" data-key="columns" min="80" max="640" step="2" value="420">
+  <input type="range" data-key="columns" min="80" max="640" step="2" value="302">
   <label>Height <span class="val" data-for="aspect"></span></label>
   <input type="range" data-key="aspect" min="1.4" max="2.2" step="0.05" value="1.7">
 
   <h2>Burst</h2>
   <label>Size <span class="val" data-for="size"></span></label>
-  <input type="range" data-key="size" min="0.4" max="2.4" step="0.05" value="0.5">
+  <input type="range" data-key="size" min="0.4" max="2.4" step="0.05" value="0.4">
   <label>Arms <span class="val" data-for="arms"></span></label>
-  <input type="range" data-key="arms" min="4" max="48" step="1" value="24">
+  <input type="range" data-key="arms" min="4" max="64" step="1" value="54">
   <label>Gravity <span class="val" data-for="gravity"></span></label>
-  <input type="range" data-key="gravity" min="0.25" max="2.5" step="0.05" value="1">
+  <input type="range" data-key="gravity" min="0.25" max="2.5" step="0.05" value="1.35">
 
   <h2>Shape</h2>
   <label>Asymmetry <span class="val" data-for="asymmetry"></span></label>
@@ -115,6 +115,7 @@
   <label>Fade <span class="val" data-for="fade"></span></label>
   <input type="range" data-key="fade" min="0" max="1" step="0.01" value="0.35">
   <button id="bg" type="button">White background</button>
+  <button id="glow" type="button">Glow on</button>
 </aside>
 <script>
 // Recreation of rvizzz/text_art_animations fireworks.
@@ -141,13 +142,33 @@ let rows = 0;
 let energy, glyphs, colors;
 let hinted = true;
 let lightSky = false;
+let glow = false;
+let viewScale = 1;
+let fontCss = "";
+let lit = [];
+let litCount = 0;
+const glyphCache = new Map();
+let cacheGen = 0;
+let glowCanvas = null;
+let glowCtx = null;
+let colorCanvas = null;
+let colorCtx = null;
+const ATLAS = 1024;
+let atlasPages = [];
+let atlasCtxs = [];
+let atlasIndex = -1;
+let atlasX = 0;
+let atlasY = 0;
+let atlasRowH = 0;
+let scratch = null;
+let scratchCtx = null;
 
 const controls = {
-  columns: 420,
+  columns: 302,
   aspect: 1.7,
-  size: 0.5,
-  arms: 24,
-  gravity: 1,
+  size: 0.4,
+  arms: 54,
+  gravity: 1.35,
   asymmetry: 0.75,
   noise: 0.6,
   fade: 0.35
@@ -158,12 +179,12 @@ const sparks = [];
 let last = performance.now();
 
 function layout() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  viewScale = Math.min(window.devicePixelRatio || 1, 2);
   cssW = window.innerWidth;
   cssH = window.innerHeight;
-  canvas.width = Math.max(1, Math.floor(cssW * dpr));
-  canvas.height = Math.max(1, Math.floor(cssH * dpr));
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  canvas.width = Math.max(1, Math.floor(cssW * viewScale));
+  canvas.height = Math.max(1, Math.floor(cssH * viewScale));
+  ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
 
   cols = Math.max(1, Math.round(controls.columns));
   cellW = cssW / cols;
@@ -174,10 +195,40 @@ function layout() {
   energy = new Float32Array(cols * rows);
   glyphs = new Array(cols * rows);
   colors = new Uint32Array(cols * rows);
-  ctx.font = `${Math.max(7, Math.floor(cellH * 0.92))}px Consolas, "Courier New", monospace`;
+  lit = [];
+  litCount = 0;
+  fontCss = `${Math.max(7, Math.floor(cellH * 0.92))}px Consolas, "Courier New", monospace`;
+  ctx.font = fontCss;
   ctx.textBaseline = "top";
   ctx.textAlign = "left";
+  resetAtlas();
+  if (!glowCanvas) {
+    glowCanvas = document.createElement("canvas");
+    glowCtx = glowCanvas.getContext("2d", { alpha: true });
+    colorCanvas = document.createElement("canvas");
+    colorCtx = colorCanvas.getContext("2d", { alpha: true });
+  }
+  glowCanvas.width = canvas.width;
+  glowCanvas.height = canvas.height;
+  colorCanvas.width = canvas.width;
+  colorCanvas.height = canvas.height;
   paintControls();
+}
+
+function noteLit(i) {
+  if (litCount < lit.length) lit[litCount] = i;
+  else lit.push(i);
+  litCount++;
+}
+
+function dropAt(list, i) {
+  const last = list.length - 1;
+  const item = list.pop();
+  if (i < last) {
+    list[i] = item;
+    return true;
+  }
+  return false;
 }
 
 function pack(rgb) {
@@ -196,25 +247,30 @@ function stamp(x, y, e, rgb) {
   const set = BANDS[band];
   glyphs[i] = set[(Math.random() * set.length) | 0];
   colors[i] = pack(rgb);
+  noteLit(i);
 }
 
-function stampChar(x, y, ch, rgb) {
+function stampChar(x, y, ch, rgb, rank) {
   const c = (x / cellW) | 0;
   const r = (y / cellH) | 0;
   if (c < 0 || r < 0 || c >= cols || r >= rows) return;
   const i = r * cols + c;
-  if (energy[i] > 0) return;
-  energy[i] = 1;
+  const next = rank == null ? 1 : rank;
+  if (energy[i] >= next) return;
+  const fresh = energy[i] <= 0;
+  energy[i] = next;
   glyphs[i] = ch;
   colors[i] = pack(rgb);
+  if (fresh) noteLit(i);
 }
 
-function glyphChar() {
+function glyphChar(zDir) {
+  if (zDir > 0.2) return BANDS[0][(Math.random() * BANDS[0].length) | 0];
   const set = BANDS[2 + ((Math.random() * (BANDS.length - 2)) | 0)];
   return set[(Math.random() * set.length) | 0];
 }
 
-// Neighboring pairs, the same step apart as red and orange.
+// Neighboring pairs. The same bright colors are used on both backgrounds; the black shadow keeps them readable on white.
 const COLOR_PAIRS = [
   [[2, 100, 52], [28, 100, 52]],
   [[50, 100, 52], [78, 100, 48]],
@@ -241,26 +297,35 @@ function hsl(h, s, l) {
   return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
 }
 
+function pairRgb(pair) {
+  return [hsl(pair[0][0], pair[0][1], pair[0][2]), hsl(pair[1][0], pair[1][1], pair[1][2])];
+}
+
 function pickScheme() {
   if (Math.random() < 0.14) return { rainbow: true, colors: null };
   const pair = COLOR_PAIRS[(Math.random() * COLOR_PAIRS.length) | 0];
-  return {
-    rainbow: false,
-    colors: [hsl(pair[0][0], pair[0][1], pair[0][2]), hsl(pair[1][0], pair[1][1], pair[1][2])]
-  };
+  return { rainbow: false, colors: pairRgb(pair) };
 }
 
 function sparkRgb(scheme, angle, slot) {
-  if (scheme.rainbow) return hsl(((angle + Math.PI) / (Math.PI * 2)) * 360, 88, 60);
+  if (scheme.rainbow) {
+    const hue = ((angle + Math.PI) / (Math.PI * 2)) * 360;
+    return hsl(hue, 88, 60);
+  }
   return scheme.colors[slot % 2];
 }
 
-function addSpark(x, y, ang, speed, life, grav, color) {
+function addSpark(x, y, ang, speed, life, grav, color, zDir) {
+  const z = zDir || 0;
+  const ring = Math.sqrt(Math.max(0, 1 - z * z));
+  const depthScale = z > 0 ? 1 / (1 + 0.9 * z) : 1;
+  const screen = speed * ring * depthScale;
   sparks.push({
     x,
     y,
-    ovx: Math.cos(ang) * speed,
-    ovy: Math.sin(ang) * speed,
+    ovx: Math.cos(ang) * screen,
+    ovy: Math.sin(ang) * screen,
+    zDir: z,
     vx: 0,
     vy: 0,
     age: 0,
@@ -291,12 +356,14 @@ function explode(x, y, scheme, scale) {
     const speed = (38 + Math.random() * 14) * stretch * cellH * reach;
     const life = 2.2 + Math.random() * 0.7;
     const grav = 0.72 + Math.random() * 0.28;
-    addSpark(x, y, aim, speed, life, grav, sparkRgb(scheme, aim, i));
+    const zDir = i % 3 === 1 ? 0.6 : i % 3 === 2 ? -0.6 : 0;
+    addSpark(x, y, aim, speed, life, grav, sparkRgb(scheme, aim, i), zDir);
   }
   const fuzz = Math.max(6, Math.round(rays * 0.42));
   for (let i = 0; i < fuzz; i++) {
     const aim = Math.random() * Math.PI * 2;
     const speed = (4 + Math.random() * 11) * cellH * reach;
+    const zDir = i % 2 === 0 ? 0.45 : -0.45;
     addSpark(
       x,
       y,
@@ -304,7 +371,8 @@ function explode(x, y, scheme, scale) {
       speed,
       0.75 + Math.random() * 0.55,
       0.35 + Math.random() * 0.3,
-      sparkRgb(scheme, aim, i)
+      sparkRgb(scheme, aim, i),
+      zDir
     );
   }
 }
@@ -329,12 +397,16 @@ function launch(x, y) {
     hold: 0,
     sway: Math.random() * Math.PI * 2,
     sway2: Math.random() * Math.PI * 2,
-    trail: []
+    trail: [],
+    trailStart: 0
   });
 }
 
 function rocketColor(rocket) {
-  if (rocket.scheme.rainbow) return hsl((rocket.age * 280) % 360, 88, 62);
+  if (rocket.scheme.rainbow) {
+    const hue = Math.round(((rocket.age * 280) % 360) / 2) * 2;
+    return hsl(hue, 88, 62);
+  }
   return rocket.scheme.colors[0];
 }
 
@@ -354,7 +426,7 @@ function pushGlyph(s, x, y, rgb) {
   s.glyphs.push({
     x: x + (Math.random() - 0.5) * cellW * 0.18 * (controls.noise / 0.6),
     y: y + (Math.random() - 0.5) * cellH * 0.12 * (controls.noise / 0.6),
-    ch: glyphChar(),
+    ch: glyphChar(s.zDir),
     rgb,
     dieAt: s.falling ? s.age + (0.05 + Math.random() * 0.28) * span : Infinity
   });
@@ -390,7 +462,7 @@ function step(dt) {
       r.hold -= dt;
       if (r.hold <= 0) {
         explode(r.tx, r.ty, r.scheme, 1);
-        rockets.splice(i, 1);
+        if (dropAt(rockets, i)) i++;
       }
       continue;
     }
@@ -409,19 +481,27 @@ function step(dt) {
     if (!prev || Math.abs(y - prev.y) > cellH * 0.7 || Math.abs(x - prev.x) > cellW * 0.75) {
       r.trail.push({ x, y });
     }
-    const remain = Math.min(1, (1 - ease) / 0.14);
-    const tail = Math.max(0, Math.round(14 * remain));
-    while (r.trail.length > tail) r.trail.shift();
+    // Climb speed falls with (1-t)^2, so the streak is long at launch and gone at the peak.
+    const speedFrac = (1 - t) * (1 - t);
+    const tail = Math.round(84 * speedFrac);
+    let start = r.trailStart;
+    while (r.trail.length - start > tail) start++;
+    if (start > 48) {
+      r.trail.splice(0, start);
+      start = 0;
+    }
+    r.trailStart = start;
     if (t >= 1) {
       r.phase = "gone";
       r.hold = 0.16;
       r.trail.length = 0;
+      r.trailStart = 0;
       continue;
     }
     const head = rocketColor(r);
-    const n = r.trail.length;
+    const n = r.trail.length - start;
     for (let k = 0; k < n; k++) {
-      const p = r.trail[k];
+      const p = r.trail[start + k];
       const e = k === n - 1 ? 1 : 0.28 + 0.45 * (k / n);
       stamp(p.x, p.y, e, head);
     }
@@ -433,7 +513,7 @@ function step(dt) {
     const s = sparks[i];
     s.age += dt;
     if (s.y > cssH + cellH * 4) {
-      sparks.splice(i, 1);
+      if (dropAt(sparks, i)) i++;
       continue;
     }
     if (!s.burning) {
@@ -454,6 +534,7 @@ function step(dt) {
     const px = -s.vy / sp;
     const py = s.vx / sp;
     s.vx += px * shove;
+    s.vy += py * shove;
     s.x += s.vx * dt;
     s.y += s.vy * dt;
     const coasting = sp < launchSpeed * 0.42 && s.vy > cellH * 0.5 && s.age > 0.34;
@@ -468,35 +549,165 @@ function step(dt) {
     for (let k = s.glyphs.length - 1; k >= 0; k--) {
       const glyph = s.glyphs[k];
       if (s.age >= glyph.dieAt) {
-        s.glyphs.splice(k, 1);
+        if (dropAt(s.glyphs, k)) k++;
         continue;
       }
-      stampChar(glyph.x, glyph.y, glyph.ch, glyph.rgb);
+      stampChar(glyph.x, glyph.y, glyph.ch, glyph.rgb, 1 - s.zDir);
     }
     if (s.age >= s.life || (s.falling && s.glyphs.length === 0)) {
-      sparks.splice(i, 1);
+      if (dropAt(sparks, i)) i++;
     }
   }
 
   if (sparks.length > 4200) sparks.splice(0, sparks.length - 4200);
 }
 
+function newAtlasPage() {
+  const page = document.createElement("canvas");
+  page.width = ATLAS;
+  page.height = ATLAS;
+  atlasPages.push(page);
+  atlasCtxs.push(page.getContext("2d", { alpha: true }));
+  atlasIndex = atlasPages.length - 1;
+  atlasX = 0;
+  atlasY = 0;
+  atlasRowH = 0;
+}
+
+function resetAtlas() {
+  atlasPages = [];
+  atlasCtxs = [];
+  atlasIndex = -1;
+  atlasX = 0;
+  atlasY = 0;
+  atlasRowH = 0;
+  glyphCache.clear();
+  newAtlasPage();
+}
+
+function makeSprite(ch, fill) {
+  const pad = 2;
+  const width = Math.max(cellW, ctx.measureText(ch).width);
+  const cssWidth = width + pad * 2;
+  const cssHeight = cellH + pad * 2;
+  const pw = Math.max(1, Math.ceil(cssWidth * viewScale));
+  const ph = Math.max(1, Math.ceil(cssHeight * viewScale));
+  if (!scratch || scratch.width < pw || scratch.height < ph) {
+    scratch = document.createElement("canvas");
+    scratch.width = Math.max(pw, 128);
+    scratch.height = Math.max(ph, 128);
+    scratchCtx = scratch.getContext("2d", { alpha: true });
+  }
+  scratchCtx.setTransform(1, 0, 0, 1, 0, 0);
+  scratchCtx.clearRect(0, 0, pw, ph);
+  scratchCtx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
+  scratchCtx.font = fontCss;
+  scratchCtx.textBaseline = "top";
+  scratchCtx.textAlign = "left";
+  scratchCtx.fillStyle = fill;
+  scratchCtx.fillText(ch, pad, pad);
+
+  if (atlasIndex < 0) newAtlasPage();
+  if (atlasX + pw > ATLAS) {
+    atlasX = 0;
+    atlasY += atlasRowH;
+    atlasRowH = 0;
+  }
+  if (atlasY + ph > ATLAS) newAtlasPage();
+  const actx = atlasCtxs[atlasIndex];
+  actx.setTransform(1, 0, 0, 1, 0, 0);
+  actx.drawImage(scratch, 0, 0, pw, ph, atlasX, atlasY, pw, ph);
+  const entry = {
+    atlas: atlasPages[atlasIndex],
+    sx: atlasX,
+    sy: atlasY,
+    sw: pw,
+    sh: ph,
+    ox: pad,
+    oy: pad,
+    cssW: cssWidth,
+    cssH: cssHeight,
+    gen: cacheGen
+  };
+  atlasX += pw;
+  if (ph > atlasRowH) atlasRowH = ph;
+  return entry;
+}
+
+function paintGlyph(target, ch, key, x, y) {
+  let bucket = glyphCache.get(key);
+  if (!bucket) {
+    bucket = new Map();
+    glyphCache.set(key, bucket);
+  }
+  let entry = bucket.get(ch);
+  if (entry) entry.gen = cacheGen;
+  else {
+    const fill = "rgb(" + ((key >> 16) & 255) + "," + ((key >> 8) & 255) + "," + (key & 255) + ")";
+    entry = makeSprite(ch, fill);
+    bucket.set(ch, entry);
+  }
+  target.drawImage(
+    entry.atlas, entry.sx, entry.sy, entry.sw, entry.sh,
+    x - entry.ox, y - entry.oy, entry.cssW, entry.cssH
+  );
+}
+
+function pruneGlyphCache() {
+  cacheGen++;
+  if (atlasPages.length > 3) {
+    resetAtlas();
+    return;
+  }
+  if ((cacheGen & 63) !== 0) return;
+  for (const [key, bucket] of glyphCache) {
+    for (const [ch, entry] of bucket) {
+      if (cacheGen - entry.gen > 64) bucket.delete(ch);
+    }
+    if (bucket.size === 0) glyphCache.delete(key);
+  }
+}
+
 function draw() {
   ctx.fillStyle = lightSky ? "#ffffff" : "#000000";
   ctx.fillRect(0, 0, cssW, cssH);
-  ctx.font = `${Math.floor(cellH * 0.92)}px Consolas, "Courier New", monospace`;
+  ctx.font = fontCss;
 
-  for (let i = 0; i < energy.length; i++) {
-    const e = energy[i];
-    if (e <= 0) continue;
-    const rgb = colors[i];
-    ctx.fillStyle = `rgb(${(rgb >> 16) & 255},${(rgb >> 8) & 255},${rgb & 255})`;
-    ctx.fillText(glyphs[i], (i % cols) * cellW, ((i / cols) | 0) * cellH);
+  if (litCount > 0) {
+    colorCtx.setTransform(1, 0, 0, 1, 0, 0);
+    colorCtx.clearRect(0, 0, colorCanvas.width, colorCanvas.height);
+    colorCtx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
+    for (let n = 0; n < litCount; n++) {
+      const i = lit[n];
+      paintGlyph(colorCtx, glyphs[i], colors[i], (i % cols) * cellW, ((i / cols) | 0) * cellH);
+    }
+
+    // The shadow is black, so on a black sky it adds nothing. Blur the
+    // silhouette once instead of blurring every character.
+    if (glow && lightSky) {
+      glowCtx.setTransform(1, 0, 0, 1, 0, 0);
+      glowCtx.globalCompositeOperation = "source-over";
+      glowCtx.clearRect(0, 0, glowCanvas.width, glowCanvas.height);
+      glowCtx.drawImage(colorCanvas, 0, 0);
+      glowCtx.globalCompositeOperation = "source-in";
+      glowCtx.fillStyle = "#000000";
+      glowCtx.fillRect(0, 0, glowCanvas.width, glowCanvas.height);
+      glowCtx.globalCompositeOperation = "source-over";
+      ctx.save();
+      ctx.shadowColor = "#000000";
+      ctx.shadowBlur = Math.max(16, cellH * 4);
+      ctx.drawImage(glowCanvas, 0, 0, cssW, cssH);
+      ctx.drawImage(glowCanvas, 0, 0, cssW, cssH);
+      ctx.restore();
+    }
+
+    ctx.drawImage(colorCanvas, 0, 0, cssW, cssH);
   }
+  pruneGlyphCache();
 
   if (hinted && rockets.length === 0 && sparks.length === 0) {
     ctx.fillStyle = lightSky ? "#3a3a3a" : "#6a6a6a";
-    ctx.font = `${Math.floor(cellH * 0.92)}px Consolas, "Courier New", monospace`;
+    ctx.font = fontCss;
     const msg = "click";
     ctx.fillText(msg, (cssW - msg.length * cellW) / 2, (cssH - cellH) / 2);
   }
@@ -506,6 +717,7 @@ function frame(now) {
   let dt = (now - last) / 1000;
   last = now;
   if (dt > 0.05) dt = 0.05;
+  litCount = 0;
   energy.fill(0);
   step(dt);
   draw();
@@ -544,6 +756,11 @@ document.getElementById("bg").addEventListener("click", () => {
   lightSky = !lightSky;
   document.body.style.background = lightSky ? "#ffffff" : "#000000";
   document.getElementById("bg").textContent = lightSky ? "Black background" : "White background";
+});
+
+document.getElementById("glow").addEventListener("click", () => {
+  glow = !glow;
+  document.getElementById("glow").textContent = glow ? "Glow off" : "Glow on";
 });
 
 canvas.addEventListener("pointerdown", (e) => {
