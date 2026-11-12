@@ -122,9 +122,8 @@
   <label for="shell">Firework</label>
   <select id="shell" aria-label="Firework type">
     <option value="original" selected>Original</option>
-    <option value="chrysanthemum">Chrysanthemum</option>
     <option value="pompom">Pom pom</option>
-    <option value="palm">Palm</option>
+    <option value="crossette">Crossette</option>
   </select>
   <div class="tabs">
     <button type="button" id="tab-shell" class="on">This firework</button>
@@ -133,6 +132,8 @@
 
   <div id="page-shell" class="page">
     <h2>Burst</h2>
+    <label>Rise <span class="val" data-for="rise"></span></label>
+    <input type="range" data-key="rise" min="0.35" max="2.5" step="0.05" value="0.5">
     <label>Size <span class="val" data-for="size"></span></label>
     <input type="range" data-key="size" min="0.4" max="2.4" step="0.05" value="0.4">
     <label>Arms <span class="val" data-for="arms"></span></label>
@@ -217,15 +218,15 @@ function freshShell() {
     gravity: 1.35,
     asymmetry: 0.75,
     noise: 0.6,
-    fade: 0.35
+    fade: 0.35,
+    rise: 0.5
   };
 }
 
 const shells = {
   original: freshShell(),
-  chrysanthemum: freshShell(),
-  pompom: freshShell(),
-  palm: freshShell()
+  pompom: Object.assign(freshShell(), { gravity: 0.25 }),
+  crossette: freshShell()
 };
 
 function shellOf(kind) {
@@ -401,8 +402,9 @@ function addSpark(x, y, ang, speed, life, grav, color, zDir, size, kind, core) {
     glyphs: [],
     last: null,
     fadeArmed: false,
-    drooping: false,
-    tailKeep: 0,
+    crackAt: 0,
+    cracked: false,
+    thin: false,
     color
   });
 }
@@ -415,7 +417,7 @@ function pickSize() {
 
 function chosenKind() {
   const value = document.getElementById("shell").value;
-  if (value === "chrysanthemum" || value === "pompom" || value === "palm" || value === "original") {
+  if (value === "pompom" || value === "original" || value === "crossette") {
     return value;
   }
   return "original";
@@ -430,7 +432,7 @@ function explode(x, y, scheme, scale, kind) {
 
   if (type === "pompom") {
     // Points on a sphere. Equatorial dots travel the full flat radius; depth stays inside it.
-    const count = Math.max(36, Math.round(spec.arms * size * 2.2));
+    const count = Math.max(72, Math.round(spec.arms * size * 6.6));
     const golden = Math.PI * (3 - Math.sqrt(5));
     for (let i = 0; i < count; i++) {
       const y3 = 1 - ((i + 0.5) / count) * 2;
@@ -458,40 +460,19 @@ function explode(x, y, scheme, scale, kind) {
     return;
   }
 
-  if (type === "palm") {
-    const rays = Math.max(8, Math.round(spec.arms * size * 0.45));
-    const a0 = -2.7;
-    const a1 = -0.45;
+  if (type === "crossette") {
+    // A ring of stars. Each one flies out, then splits into a cross.
+    const rays = Math.max(6, Math.round(spec.arms * size * 0.3));
+    let ang = Math.random() * Math.PI * 2;
+    const stepAng = (Math.PI * 2) / rays;
     for (let i = 0; i < rays; i++) {
-      const u = rays === 1 ? 0.5 : i / (rays - 1);
-      let aim = a0 + (a1 - a0) * u;
-      const slot = (a1 - a0) / Math.max(1, rays);
-      aim += (Math.random() - 0.5) * slot * (0.35 + asym * 0.5);
-      if (aim < a0) aim = a0;
-      if (aim > a1) aim = a1;
-      const stretch = 0.9 + Math.random() * (0.2 + asym * 0.15);
-      const speed = (38 + Math.random() * 14) * stretch * cellH * reach * 0.75;
-      const life = 2.2 + Math.random() * 0.7;
-      const grav = 0.72 + Math.random() * 0.28;
-      addSpark(x, y, aim, speed, life, grav, sparkRgb(scheme, aim, i), 0, size, type);
-    }
-    const fuzz = Math.max(3, Math.round(rays * 0.16));
-    for (let i = 0; i < fuzz; i++) {
-      const aim = a0 + Math.random() * (a1 - a0);
-      const speed = (8 + Math.random() * 14) * cellH * reach * 0.75;
-      const zDir = i % 2 === 0 ? 0.22 : -0.22;
-      addSpark(
-        x,
-        y,
-        aim,
-        speed,
-        0.9 + Math.random() * 0.5,
-        0.4 + Math.random() * 0.3,
-        sparkRgb(scheme, aim, i),
-        zDir,
-        size,
-        type
-      );
+      ang += stepAng;
+      const aim = ang + (Math.random() - 0.5) * stepAng * (0.25 + asym * 0.35);
+      const stretch = 0.92 + Math.random() * (0.1 + asym * 0.08);
+      const speed = (18 + Math.random() * 5) * stretch * cellH * reach;
+      const life = 2.4 + Math.random() * 0.15;
+      addSpark(x, y, aim, speed, life, 0.85, sparkRgb(scheme, aim, i), 0, size, type, false);
+      sparks[sparks.length - 1].crackAt = 0.9 + Math.random() * 0.28;
     }
     return;
   }
@@ -597,10 +578,13 @@ function pushGlyph(s, x, y, rgb) {
     const span = Math.max(0.2, s.life - s.age) * fadeMul(s.kind);
     dieAt = s.age + (0.45 + Math.random() * 0.55) * span;
   }
+  const thin = !!s.thin;
+  const noise = thin ? 0 : shellOf(s.kind).noise / 0.6;
+  const thinChars = ".-'";
   s.glyphs.push({
-    x: x + (Math.random() - 0.5) * cellW * 0.18 * (shellOf(s.kind).noise / 0.6),
-    y: y + (Math.random() - 0.5) * cellH * 0.12 * (shellOf(s.kind).noise / 0.6),
-    ch: glyphChar(s.zDir),
+    x: x + (Math.random() - 0.5) * cellW * 0.18 * noise,
+    y: y + (Math.random() - 0.5) * cellH * 0.12 * noise,
+    ch: thin ? thinChars[(Math.random() * thinChars.length) | 0] : glyphChar(s.zDir),
     rgb,
     twinkle: Math.random() * Math.PI * 2,
     dieAt
@@ -633,6 +617,55 @@ function layGlyphs(s, x0, y0, x1, y1, gap) {
   }
 }
 
+// The star stops at the break. Four short arms leave in a cross around its heading.
+function crackCrossette(s) {
+  s.cracked = true;
+  s.crackAt = 0;
+  const heading = Math.atan2(s.vy, s.vx);
+  const split = Math.max(cellH * 18, Math.hypot(s.vx, s.vy) * 0.9);
+  const drift = 0.16;
+  const span = 0.65 + shellOf(s.kind).asymmetry * 0.55;
+  const order = [0, 1, 2, 3];
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    const swap = order[i];
+    order[i] = order[j];
+    order[j] = swap;
+  }
+  const reach = [0.5, 0.78, 1.12, 1.58];
+  for (let n = 0; n < 4; n++) {
+    const aim = heading + order[n] * (Math.PI / 2);
+    const scale = 1 + (reach[n] - 1) * span;
+    const vx = s.vx * drift + Math.cos(aim) * split * scale;
+    const vy = s.vy * drift + Math.sin(aim) * split * scale;
+    addSpark(
+      s.x,
+      s.y,
+      Math.atan2(vy, vx),
+      Math.hypot(vx, vy),
+      0.46 + 0.34 * scale,
+      0.4,
+      s.color,
+      0,
+      s.size,
+      "crossette",
+      true
+    );
+    sparks[sparks.length - 1].thin = true;
+  }
+  s.vx = 0;
+  s.vy = 0;
+  s.grav = 0;
+  s.life = s.age + 0.4;
+  s.fadeArmed = true;
+  const total = s.glyphs.length;
+  const fadeWindow = 0.34 * fadeMul(s.kind);
+  for (let i = 0; i < total; i++) {
+    const along = total <= 1 ? 1 : i / (total - 1);
+    s.glyphs[i].dieAt = s.age + fadeWindow * (0.2 + 0.8 * along);
+  }
+}
+
 function step(dt) {
   for (let i = rockets.length - 1; i >= 0; i--) {
     const r = rockets[i];
@@ -644,7 +677,7 @@ function step(dt) {
       }
       continue;
     }
-    r.age += dt;
+    r.age += dt * Math.max(0.2, shellOf(r.kind).rise || 1);
     const t = Math.min(1, r.age / r.dur);
     // Constant deceleration: most of the climb is early, then it coasts to a stop.
     const ease = 1 - Math.pow(1 - t, 3);
@@ -657,22 +690,12 @@ function step(dt) {
     const x = r.tx + bend * cellW * 5.5 * envelope;
     const prev = r.tip;
     if (!prev || Math.abs(y - prev.y) > cellH * 0.7 || Math.abs(x - prev.x) > cellW * 0.75) {
-      if (r.kind === "palm") {
-        const side = cellW * 1.15;
-        r.trail.push({ x: x - side, y });
-        r.trail.push({ x: x + side, y });
-        r.trail.push({ x: x - cellW, y });
-        r.trail.push({ x: x + cellW, y });
-        r.trail.push({ x, y });
-      } else {
-        r.trail.push({ x, y });
-      }
+      r.trail.push({ x, y });
       r.tip = { x, y };
     }
     // Climb speed falls with (1-t)^2, so the streak is long at launch and gone at the peak.
     const speedFrac = (1 - t) * (1 - t);
-    const wide = r.kind === "palm" ? 5 : 1;
-    const tail = Math.round(84 * speedFrac * r.size) * wide;
+    const tail = Math.round(84 * speedFrac * r.size);
     let start = r.trailStart;
     while (r.trail.length - start > tail) start++;
     if (start > 48) {
@@ -704,71 +727,56 @@ function step(dt) {
       if (dropAt(sparks, i)) i++;
       continue;
     }
-    if (!s.burning) {
-      s.vx = s.ovx;
-      s.vy = s.ovy;
-      s.burning = true;
-    }
-    const sp0 = Math.hypot(s.vx, s.vy);
-    const drag = 2.4 + sp0 * 0.0032;
-    s.vx *= Math.exp(-drag * dt);
-    s.vy *= Math.exp(-drag * dt);
-    const launchSpeed = Math.hypot(s.ovx, s.ovy) || 1;
-    const spec = shellOf(s.kind);
-    const g = 16 * cellH * reachFor(s.kind) * spec.gravity;
-    let gravGate = 0.62;
-    let gravMul = 1;
-    let droopAt = s.kind === "chrysanthemum" ? 0.45 : 0;
-    if (s.kind === "pompom") gravGate = Infinity;
-    else if (s.kind === "palm") {
-      gravGate = 0.8;
-      gravMul = 1.8;
-      droopAt = 0;
-    }
-    const droopNow = droopAt > 0 && sp0 < launchSpeed * droopAt;
-    if (s.kind === "chrysanthemum" && droopNow) {
-      if (!s.drooping) {
-        s.drooping = true;
-        // Outer rim keeps a short bent tail. Interior sparks (depth and fuzz) clear out.
-        const outer = !s.core && Math.abs(s.zDir) < 0.05;
-        s.tailKeep = outer ? 8 + ((Math.random() * 7) | 0) : 0;
+    if (!s.cracked) {
+      if (!s.burning) {
+        s.vx = s.ovx;
+        s.vy = s.ovy;
+        s.burning = true;
       }
-      // The crown is still up at the droop gate. Pull harder so those tails hang by ~1s.
-      gravMul = 5;
-    }
-    if (sp0 < launchSpeed * gravGate) s.vy += g * s.grav * s.size * gravMul * dt;
-    const sp = Math.hypot(s.vx, s.vy) || 1;
-    if (s.kind !== "pompom") {
-      s.wobble += (Math.random() - 0.5) * 7 * (spec.noise / 0.6) * dt;
-      s.wobble *= Math.exp(-2.4 * dt);
-      const shove = s.wobble * cellH * 0.9 * dt;
-      const px = -s.vy / sp;
-      const py = s.vx / sp;
-      s.vx += px * shove;
-      s.vy += py * shove;
-    }
-    if (droopNow) s.vx *= Math.exp(-6 * dt);
-    s.x += s.vx * dt;
-    s.y += s.vy * dt;
-    if (s.kind === "original" || s.kind === "pompom") {
-      const coasting = sp < launchSpeed * 0.42 && s.vy > cellH * 0.5 && s.age > 0.34;
-      if (s.burning && !s.falling && (coasting || s.age > s.life * 0.5)) beginFall(s);
-    } else {
-      armFade(s);
-    }
+      const sp0 = Math.hypot(s.vx, s.vy);
+      const drag = 2.4 + sp0 * 0.0032;
+      s.vx *= Math.exp(-drag * dt);
+      s.vy *= Math.exp(-drag * dt);
+      const launchSpeed = Math.hypot(s.ovx, s.ovy) || 1;
+      const spec = shellOf(s.kind);
+      const g = 16 * cellH * reachFor(s.kind) * spec.gravity;
+      let gravGate = 0.62;
+      if (s.kind === "pompom") gravGate = Infinity;
+      else if (s.kind === "crossette" && !s.core) gravGate = 0;
+      if (sp0 < launchSpeed * gravGate) s.vy += g * s.grav * s.size * dt;
+      const sp = Math.hypot(s.vx, s.vy) || 1;
+      if (s.kind !== "pompom" && !(s.kind === "crossette" && s.core)) {
+        s.wobble += (Math.random() - 0.5) * 7 * (spec.noise / 0.6) * dt;
+        s.wobble *= Math.exp(-2.4 * dt);
+        const shove = s.wobble * cellH * 0.9 * dt;
+        const px = -s.vy / sp;
+        const py = s.vx / sp;
+        s.vx += px * shove;
+        s.vy += py * shove;
+      }
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      if (s.kind === "original" || s.kind === "pompom") {
+        const coasting = sp < launchSpeed * 0.42 && s.vy > cellH * 0.5 && s.age > 0.34;
+        if (s.burning && !s.falling && (coasting || s.age > s.life * 0.5)) beginFall(s);
+      } else {
+        armFade(s);
+      }
 
-    if (s.kind === "pompom") {
-      s.glyphs.length = 0;
-      pushGlyph(s, s.x, s.y, s.color);
-    } else {
-      const prev = s.last;
-      if (!prev || Math.hypot(s.x - prev.x, s.y - prev.y) >= gap) {
-        if (prev) layGlyphs(s, prev.x, prev.y, s.x, s.y, gap);
-        s.last = { x: s.x, y: s.y };
+      if (s.kind === "pompom") {
+        s.glyphs.length = 0;
+        pushGlyph(s, s.x, s.y, s.color);
+      } else {
+        const prev = s.last;
+        const stride = s.thin ? Math.max(cellW, cellH) : gap;
+        if (!prev || Math.hypot(s.x - prev.x, s.y - prev.y) >= stride) {
+          if (prev) layGlyphs(s, prev.x, prev.y, s.x, s.y, stride);
+          s.last = { x: s.x, y: s.y };
+        }
       }
-    }
-    if (s.drooping && s.glyphs.length > s.tailKeep) {
-      s.glyphs.splice(0, s.glyphs.length - s.tailKeep);
+      if (s.kind === "crossette" && !s.core && s.crackAt > 0 && s.age >= s.crackAt) {
+        crackCrossette(s);
+      }
     }
 
     for (let k = s.glyphs.length - 1; k >= 0; k--) {
@@ -962,7 +970,7 @@ function frame(now) {
 function controlText(key, value) {
   if (key === "columns") return cols + " × " + rows;
   if (key === "aspect") return value.toFixed(2);
-  if (key === "size" || key === "gravity") return value.toFixed(2) + "×";
+  if (key === "size" || key === "gravity" || key === "rise") return value.toFixed(2) + "×";
   if (key === "arms") return String(value);
   return Math.round(value * 100) + "%";
 }
@@ -1035,6 +1043,7 @@ window.fw = {
       const tip = s.glyphs[s.glyphs.length - 1];
       return {
         x: s.x, y: s.y, z: s.zDir, kind: s.kind, core: s.core, age: s.age, n: s.glyphs.length,
+        cracked: s.cracked,
         wave: tip ? Math.sin(s.age * 16 + tip.twinkle) : 0
       };
     });
